@@ -1,0 +1,12 @@
+disturl="https://electronjs.org/headers"
+target="39.8.7"
+ms_build_id="13797146"
+runtime="electron"
+ignore-scripts=false
+build_from_source="true"
+legacy-peer-deps="true"
+timeout=180000
+# Local Code: allow native module install scripts (pnpm 10+ blocks by default)
+strict-dep-builds=false
+# VS Code gulp build resolves packages from repo root like npm (e.g. gulp-vinyl-zip)
+node-linker=hoisted

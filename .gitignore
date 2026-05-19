@@ -1,0 +1,25 @@
+# Cloned upstream VS Code tree (run vscodium/get_repo.sh locally)
+vscodium/vscode/
+
+# Dependencies and build artifacts
+**/node_modules/
+**/.build/
+**/out/
+**/.pnpm-store/
+**/dist/
+
+# OS and secrets
+.DS_Store
+*.env
+.env
+.env.*
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# Logs and caches
+*.log
+.npm/
+.cache/

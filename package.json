@@ -1,0 +1,14 @@
+{
+  "name": "local-code",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Local Code — local-LLM-first IDE (VSCodium-based)",
+  "packageManager": "pnpm@10.12.1",
+  "scripts": {
+    "prepare:vscode": "cd vscodium && bash prepare_vscode.sh",
+    "get:vscode": "cd vscodium && export VSCODE_QUALITY=stable && bash get_repo.sh"
+  },
+  "engines": {
+    "node": ">=22.22.1"
+  }
+}

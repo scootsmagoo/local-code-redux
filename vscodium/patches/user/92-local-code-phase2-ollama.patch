@@ -1,0 +1,405 @@
+diff --git a/src/vs/workbench/contrib/chat/browser/chat.contribution.ts b/src/vs/workbench/contrib/chat/browser/chat.contribution.ts
+index d4258b9e..e00eaca1 100644
+--- a/src/vs/workbench/contrib/chat/browser/chat.contribution.ts
++++ b/src/vs/workbench/contrib/chat/browser/chat.contribution.ts
+@@ -1511,6 +1511,18 @@ configurationRegistry.registerConfiguration({
+ 			description: nls.localize('localCode.ollama.defaultModel', "Default Ollama model id (for example qwen2.5-coder:7b). Leave empty to use the first available model."),
+ 			scope: ConfigurationScope.APPLICATION
+ 		},
++		'localCode.ollama.requestTimeoutMs': {
++			type: 'number',
++			default: 120000,
++			description: nls.localize('localCode.ollama.requestTimeoutMs', "Timeout in milliseconds for Ollama HTTP requests."),
++			scope: ConfigurationScope.APPLICATION
++		},
++		'localCode.ollama.maxOutputTokens': {
++			type: 'number',
++			default: 4096,
++			description: nls.localize('localCode.ollama.maxOutputTokens', "Maximum tokens Ollama may generate per chat response (num_predict)."),
++			scope: ConfigurationScope.APPLICATION
++		},
+ 	}
+ });
+diff --git a/src/vs/workbench/contrib/chat/electron-browser/chat.contribution.ts b/src/vs/workbench/contrib/chat/electron-browser/chat.contribution.ts
+index 0e4361f2..12137444 100644
+--- a/src/vs/workbench/contrib/chat/electron-browser/chat.contribution.ts
++++ b/src/vs/workbench/contrib/chat/electron-browser/chat.contribution.ts
+@@ -32,6 +32,7 @@ import { ILifecycleService, ShutdownReason } from '../../../services/lifecycle/c
+ import { IViewsService } from '../../../services/views/common/viewsService.js';
+ import { ACTION_ID_NEW_CHAT, CHAT_OPEN_ACTION_ID, IChatViewOpenOptions } from '../browser/actions/chatActions.js';
+ import { AgentHostContribution } from '../browser/agentSessions/agentHost/agentHostChatContribution.js';
++import '../../localLLM/browser/localLLM.contribution.js';
+ import { AgentSessionProviders } from '../browser/agentSessions/agentSessions.js';
+ import { isSessionInProgressStatus } from '../browser/agentSessions/agentSessionsModel.js';
+ import { IAgentSessionsService } from '../browser/agentSessions/agentSessionsService.js';
+diff --git a/src/vs/workbench/contrib/localLLM/browser/localLLM.contribution.ts b/src/vs/workbench/contrib/localLLM/browser/localLLM.contribution.ts
+new file mode 100644
+index 00000000..9b13281e
+--- /dev/null
++++ b/src/vs/workbench/contrib/localLLM/browser/localLLM.contribution.ts
+@@ -0,0 +1,51 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Local Code contributors. All rights reserved.
++ *  Licensed under the MIT License.
++ *--------------------------------------------------------------------------------------------*/
++
++import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
++import { localize } from '../../../../nls.js';
++import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
++import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
++import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
++import { ILanguageModelsService } from '../../chat/common/languageModels.js';
++import { LocalCodeOllamaSettings, OllamaLanguageModelProvider } from './ollamaLanguageModelProvider.js';
++import { OLLAMA_VENDOR } from './ollamaClient.js';
++
++export class LocalLLMContribution extends Disposable implements IWorkbenchContribution {
++
++	static readonly ID = 'workbench.contrib.localLLM';
++
++	constructor(
++		@ILanguageModelsService private readonly _languageModelsService: ILanguageModelsService,
++		@IInstantiationService instantiationService: IInstantiationService,
++		@IConfigurationService configurationService: IConfigurationService,
++	) {
++		super();
++
++		const vendorDescriptor = {
++			vendor: OLLAMA_VENDOR,
++			displayName: localize('localCode.ollama.vendor', "Ollama (local)"),
++			configuration: undefined,
++			managementCommand: undefined,
++			when: undefined,
++		};
++
++		this._languageModelsService.deltaLanguageModelChatProviderDescriptors([vendorDescriptor], []);
++		this._register(toDisposable(() => this._languageModelsService.deltaLanguageModelChatProviderDescriptors([], [vendorDescriptor])));
++
++		const provider = this._register(instantiationService.createInstance(OllamaLanguageModelProvider));
++		this._register(this._languageModelsService.registerLanguageModelProvider(OLLAMA_VENDOR, provider));
++
++		this._register(configurationService.onDidChangeConfiguration(e => {
++			if (e.affectsConfiguration(LocalCodeOllamaSettings.endpoint)
++				|| e.affectsConfiguration(LocalCodeOllamaSettings.defaultModel)
++				|| e.affectsConfiguration(LocalCodeOllamaSettings.requestTimeoutMs)
++				|| e.affectsConfiguration(LocalCodeOllamaSettings.maxOutputTokens)) {
++				provider.refresh();
++			}
++		}));
++	}
++}
++
++registerWorkbenchContribution2(LocalLLMContribution.ID, LocalLLMContribution, WorkbenchPhase.AfterRestored);
+diff --git a/src/vs/workbench/contrib/localLLM/browser/ollamaClient.ts b/src/vs/workbench/contrib/localLLM/browser/ollamaClient.ts
+new file mode 100644
+index 00000000..44cb118b
+--- /dev/null
++++ b/src/vs/workbench/contrib/localLLM/browser/ollamaClient.ts
+@@ -0,0 +1,125 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Local Code contributors. All rights reserved.
++ *  Licensed under the MIT License.
++ *--------------------------------------------------------------------------------------------*/
++
++import { VSBuffer } from '../../../../base/common/buffer.js';
++import { CancellationToken } from '../../../../base/common/cancellation.js';
++import { listenStream } from '../../../../base/common/stream.js';
++import { ILogService } from '../../../../platform/log/common/log.js';
++import { asJson, IRequestService, isSuccess } from '../../../../platform/request/common/request.js';
++
++export const OLLAMA_VENDOR = 'ollama';
++
++export interface OllamaModelInfo {
++	readonly name: string;
++}
++
++interface OllamaTagsResponse {
++	readonly models?: Array<{ readonly name: string }>;
++}
++
++export interface OllamaChatMessage {
++	readonly role: 'system' | 'user' | 'assistant';
++	readonly content: string;
++}
++
++export function normalizeOllamaEndpoint(endpoint: string): string {
++	return endpoint.replace(/\/+$/, '');
++}
++
++export function modelNameFromIdentifier(modelId: string): string {
++	const prefix = `${OLLAMA_VENDOR}/`;
++	if (modelId.startsWith(prefix)) {
++		return modelId.slice(prefix.length);
++	}
++	return modelId;
++}
++
++export function modelIdentifier(modelName: string): string {
++	return `${OLLAMA_VENDOR}/${modelName}`;
++}
++
++export class OllamaClient {
++
++	constructor(
++		private readonly _requestService: IRequestService,
++		private readonly _logService: ILogService,
++	) { }
++
++	async listModels(endpoint: string, timeoutMs: number, token: CancellationToken): Promise<OllamaModelInfo[]> {
++		const url = `${normalizeOllamaEndpoint(endpoint)}/api/tags`;
++		const context = await this._requestService.request({
++			type: 'GET',
++			url,
++			timeout: timeoutMs,
++			callSite: 'localCode.ollama.listModels',
++		}, token);
++
++		if (!isSuccess(context)) {
++			throw new Error(`Ollama tags request failed (${context.res.statusCode ?? 'unknown'})`);
++		}
++
++		const body = await asJson<OllamaTagsResponse>(context);
++		return (body?.models ?? []).map(m => ({ name: m.name }));
++	}
++
++	async streamChat(
++		endpoint: string,
++		model: string,
++		messages: OllamaChatMessage[],
++		maxOutputTokens: number,
++		timeoutMs: number,
++		onText: (chunk: string) => void,
++		token: CancellationToken,
++	): Promise<void> {
++		const url = `${normalizeOllamaEndpoint(endpoint)}/api/chat`;
++		const context = await this._requestService.request({
++			type: 'POST',
++			url,
++			headers: { 'Content-Type': 'application/json' },
++			data: JSON.stringify({
++				model,
++				messages,
++				stream: true,
++				options: { num_predict: maxOutputTokens },
++			}),
++			timeout: timeoutMs,
++			callSite: 'localCode.ollama.streamChat',
++		}, token);
++
++		if (!isSuccess(context)) {
++			throw new Error(`Ollama chat request failed (${context.res.statusCode ?? 'unknown'})`);
++		}
++
++		let buffer = '';
++
++		await new Promise<void>((resolve, reject) => {
++			listenStream(context.stream, {
++				onData: chunk => {
++					const bytes = chunk instanceof VSBuffer ? chunk : VSBuffer.wrap(chunk);
++					buffer += bytes.toString();
++					let newlineIndex: number;
++					while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
++						const line = buffer.slice(0, newlineIndex).trim();
++						buffer = buffer.slice(newlineIndex + 1);
++						if (!line) {
++							continue;
++						}
++						try {
++							const parsed = JSON.parse(line) as { message?: { content?: string }; done?: boolean };
++							const text = parsed.message?.content;
++							if (text) {
++								onText(text);
++							}
++						} catch (err) {
++							this._logService.warn(`[Local Code Ollama] Failed to parse stream line: ${line}`, err);
++						}
++					}
++				},
++				onError: err => reject(err),
++				onEnd: () => resolve(),
++			}, token);
++		});
++	}
++}
+diff --git a/src/vs/workbench/contrib/localLLM/browser/ollamaLanguageModelProvider.ts b/src/vs/workbench/contrib/localLLM/browser/ollamaLanguageModelProvider.ts
+new file mode 100644
+index 00000000..f2da3e3c
+--- /dev/null
++++ b/src/vs/workbench/contrib/localLLM/browser/ollamaLanguageModelProvider.ts
+@@ -0,0 +1,177 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Local Code contributors. All rights reserved.
++ *  Licensed under the MIT License.
++ *--------------------------------------------------------------------------------------------*/
++
++import { AsyncIterableSource, DeferredPromise } from '../../../../base/common/async.js';
++import { CancellationToken } from '../../../../base/common/cancellation.js';
++import { Emitter } from '../../../../base/common/event.js';
++import { Disposable } from '../../../../base/common/lifecycle.js';
++import { localize } from '../../../../nls.js';
++import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
++import { ExtensionIdentifier } from '../../../../platform/extensions/common/extensions.js';
++import { ILogService } from '../../../../platform/log/common/log.js';
++import { IRequestService } from '../../../../platform/request/common/request.js';
++import { ChatAgentLocation } from '../../chat/common/constants.js';
++import {
++	ChatMessageRole,
++	IChatMessage,
++	IChatResponsePart,
++	ILanguageModelChatInfoOptions,
++	ILanguageModelChatMetadataAndIdentifier,
++	ILanguageModelChatProvider,
++	ILanguageModelChatRequestOptions,
++	ILanguageModelChatResponse,
++} from '../../chat/common/languageModels.js';
++import { modelIdentifier, modelNameFromIdentifier, OllamaChatMessage, OllamaClient, OLLAMA_VENDOR } from './ollamaClient.js';
++
++const LOCAL_CODE_OLLAMA_EXTENSION = new ExtensionIdentifier('local-code.ollama');
++
++export const LocalCodeOllamaSettings = {
++	endpoint: 'localCode.ollama.endpoint',
++	defaultModel: 'localCode.ollama.defaultModel',
++	requestTimeoutMs: 'localCode.ollama.requestTimeoutMs',
++	maxOutputTokens: 'localCode.ollama.maxOutputTokens',
++} as const;
++
++export class OllamaLanguageModelProvider extends Disposable implements ILanguageModelChatProvider {
++
++	private readonly _onDidChange = this._register(new Emitter<void>());
++	readonly onDidChange = this._onDidChange.event;
++
++	private readonly _client: OllamaClient;
++
++	constructor(
++		@IRequestService requestService: IRequestService,
++		@ILogService logService: ILogService,
++		@IConfigurationService private readonly _configurationService: IConfigurationService,
++	) {
++		super();
++		this._client = new OllamaClient(requestService, logService);
++	}
++
++	refresh(): void {
++		this._onDidChange.fire();
++	}
++
++	async provideLanguageModelChatInfo(_options: ILanguageModelChatInfoOptions, token: CancellationToken): Promise<ILanguageModelChatMetadataAndIdentifier[]> {
++		const endpoint = this._configurationService.getValue<string>(LocalCodeOllamaSettings.endpoint) ?? 'http://127.0.0.1:11434';
++		const defaultModel = this._configurationService.getValue<string>(LocalCodeOllamaSettings.defaultModel) ?? '';
++		const timeoutMs = this._configurationService.getValue<number>(LocalCodeOllamaSettings.requestTimeoutMs) ?? 120_000;
++
++		let models: { name: string }[];
++		try {
++			models = await this._client.listModels(endpoint, timeoutMs, token);
++		} catch (err) {
++			throw new Error(localize('localCode.ollama.listFailed', "Could not reach Ollama at {0}. Is it running? {1}", endpoint, String(err)));
++		}
++
++		if (models.length === 0) {
++			throw new Error(localize('localCode.ollama.noModels', "Ollama is running but no models are installed. Run `ollama pull` to add a model."));
++		}
++
++		const defaultName = defaultModel && models.some(m => m.name === defaultModel)
++			? defaultModel
++			: models[0].name;
++
++		return models.map(m => {
++			const isDefault = m.name === defaultName;
++			return {
++				identifier: modelIdentifier(m.name),
++				metadata: {
++					extension: LOCAL_CODE_OLLAMA_EXTENSION,
++					name: m.name,
++					id: m.name,
++					vendor: OLLAMA_VENDOR,
++					family: m.name,
++					version: '1',
++					maxInputTokens: 128_000,
++					maxOutputTokens: this._configurationService.getValue<number>(LocalCodeOllamaSettings.maxOutputTokens) ?? 4096,
++					isDefaultForLocation: isDefault ? {
++						[ChatAgentLocation.Chat]: true,
++						[ChatAgentLocation.EditorInline]: true,
++						[ChatAgentLocation.Terminal]: true,
++						[ChatAgentLocation.Notebook]: true,
++					} : {},
++					isUserSelectable: true,
++					modelPickerCategory: { label: localize('localCode.ollama.category', "Local (Ollama)"), order: 0 },
++					capabilities: {
++						toolCalling: false,
++						agentMode: false,
++					},
++				},
++			};
++		});
++	}
++
++	async sendChatRequest(
++		modelId: string,
++		messages: IChatMessage[],
++		_from: ExtensionIdentifier | undefined,
++		_options: ILanguageModelChatRequestOptions,
++		token: CancellationToken,
++	): Promise<ILanguageModelChatResponse> {
++		const endpoint = this._configurationService.getValue<string>(LocalCodeOllamaSettings.endpoint) ?? 'http://127.0.0.1:11434';
++		const timeoutMs = this._configurationService.getValue<number>(LocalCodeOllamaSettings.requestTimeoutMs) ?? 120_000;
++		const maxOutputTokens = this._configurationService.getValue<number>(LocalCodeOllamaSettings.maxOutputTokens) ?? 4096;
++		const modelName = modelNameFromIdentifier(modelId);
++		const ollamaMessages = this._toOllamaMessages(messages);
++
++		const defer = new DeferredPromise<void>();
++		const stream = new AsyncIterableSource<IChatResponsePart>();
++
++		(async () => {
++			try {
++				await this._client.streamChat(
++					endpoint,
++					modelName,
++					ollamaMessages,
++					maxOutputTokens,
++					timeoutMs,
++					text => stream.emitOne({ type: 'text', value: text }),
++					token,
++				);
++				stream.resolve();
++				defer.complete(undefined);
++			} catch (err) {
++				const error = err instanceof Error ? err : new Error(String(err));
++				stream.reject(error);
++				defer.error(error);
++			}
++		})();
++
++		return { stream: stream.asyncIterable, result: defer.p };
++	}
++
++	async provideTokenCount(_modelId: string, message: string | IChatMessage, _token: CancellationToken): Promise<number> {
++		const text = typeof message === 'string'
++			? message
++			: message.content.filter(p => p.type === 'text').map(p => p.value).join('');
++		return Math.ceil(text.length / 4);
++	}
++
++	private _toOllamaMessages(messages: IChatMessage[]): OllamaChatMessage[] {
++		const result: OllamaChatMessage[] = [];
++		for (const message of messages) {
++			const text = message.content
++				.filter(p => p.type === 'text')
++				.map(p => p.value)
++				.join('\n');
++			if (!text) {
++				continue;
++			}
++			switch (message.role) {
++				case ChatMessageRole.System:
++					result.push({ role: 'system', content: text });
++					break;
++				case ChatMessageRole.User:
++					result.push({ role: 'user', content: text });
++					break;
++				case ChatMessageRole.Assistant:
++					result.push({ role: 'assistant', content: text });
++					break;
++			}
++		}
++		return result;
++	}
++}

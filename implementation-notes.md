@@ -4,6 +4,44 @@ Running log of decisions, tradeoffs, and changes not spelled out in [`PROJECT.md
 
 ---
 
+## 2026-05-20 — Phase 2: Ollama language model provider
+
+### Shipped in repo
+
+| Item | Location |
+|------|----------|
+| Ollama client | `vscodium/vscode/src/vs/workbench/contrib/localLLM/browser/ollamaClient.ts` — `/api/tags`, streaming `/api/chat` (NDJSON) |
+| LM provider | `ollamaLanguageModelProvider.ts` — `ILanguageModelChatProvider`, vendor `ollama`, identifiers `ollama/<model>` |
+| Workbench registration | `localLLM.contribution.ts` + import from `chat/electron-browser/chat.contribution.ts` |
+| Patch | [`vscodium/patches/user/92-local-code-phase2-ollama.patch`](vscodium/patches/user/92-local-code-phase2-ollama.patch) |
+| Extra settings | `localCode.ollama.requestTimeoutMs`, `localCode.ollama.maxOutputTokens` |
+
+### Verify locally
+
+1. Start Ollama (`ollama serve`) and pull at least one model.
+2. `pnpm run compile` in `vscodium/vscode`, then `./scripts/run-dev.sh`.
+3. Open Chat → model picker → **Local (Ollama)** group; send a prompt.
+
+### Phase 2 limits (by design)
+
+- Text-only messages (no images/tools yet).
+- Desktop Electron only (contribution loaded from `electron-browser/chat.contribution.ts`).
+### Connect to Ollama (dev tree only, patch pending)
+
+In `vscodium/vscode/` (not yet a separate patch): `ollamaConnect.ts`, `localCode.connectOllama` command, startup probe, chat link runs local `/api/tags` instead of GitHub. Re-apply from dev tree after clean `prepare_vscode.sh` until patch `94` lands.
+
+### Fix: “Failed to sign in to Ollama” (2026-05-20)
+
+Chat setup was still running the Copilot **sign-in** path because `defaultChatAgent.provider.default` is named “Ollama”. Local Code has no `chatExtensionId` and no auth.
+
+| Patch | Change |
+|-------|--------|
+| [`93-local-code-skip-chat-signin.patch`](vscodium/patches/user/93-local-code-skip-chat-signin.patch) | On startup (no `chatExtensionId`): mark setup `completed`, entitlement `Free`, skip install/sign-in; fix “Connect to Ollama” precondition |
+
+After recompile + relaunch, chat should forward to the built-in `ollama` LM provider without a sign-in dialog.
+
+---
+
 ## 2026-05-20 — Phase 1: Local Code product identity
 
 ### Shipped in repo
@@ -34,8 +72,8 @@ Electron app folder name follows `product.nameLong` (expect **Local Code Dev.app
 ### Phase 1 follow-ups
 
 - [ ] Custom icons (still VSCodium assets until overlay)
-- [ ] `defaultChatAgent` participant → Local Code agent (Phase 2 `contrib/localLLM`)
-- [ ] Wire **Connect to Ollama** command to health-check + model list (Phase 2)
+- [ ] `defaultChatAgent` participant → Local Code agent (needs chat participant wiring)
+- [ ] Wire **Connect to Ollama** command to `OllamaClient.listModels` health-check
 
 ---
 

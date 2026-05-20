@@ -131,10 +131,10 @@ local-code/
 
 ### Phase 2 — Core local LLM provider
 
-- [ ] New contrib: `contrib/localLLM`
-- [ ] Ollama: list models (`/api/tags`), chat stream (`/api/chat`)
-- [ ] Settings: endpoint, default model, context length, request timeout
-- [ ] Register with `ILanguageModelsService`; model picker in Chat
+- [x] New contrib: `contrib/localLLM`
+- [x] Ollama: list models (`/api/tags`), chat stream (`/api/chat`)
+- [x] Settings: endpoint, default model, request timeout, max output tokens
+- [x] Register with `ILanguageModelsService`; model picker in Chat
 
 ### Phase 3 — Inline chat
 

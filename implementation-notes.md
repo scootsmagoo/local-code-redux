@@ -4,6 +4,71 @@ Running log of decisions, tradeoffs, and changes not spelled out in [`PROJECT.md
 
 ---
 
+## 2026-05-20 — Windows / locked-down work PC (build not viable here)
+
+### Context
+
+Attempted Phase 0 on a **corporate Windows 10** machine with limited install permissions. Goal: `get_repo.sh` → `prepare_vscode.sh` → `pnpm install` → `pnpm run compile`.
+
+### What worked (no admin)
+
+| Step | Result |
+|------|--------|
+| Node **22.22.0** | Already in `Program Files\nodejs`; close enough to `.nvmrc` **22.22.1** |
+| **pnpm** | `npm install -g pnpm@10.12.1` to user profile (`%AppData%\Roaming\npm`) — **corepack** failed (`EPERM` writing under `Program Files\nodejs`) |
+| **jq**, **Rust** | `winget install` succeeded |
+| **Git Bash** | Required for `get_repo.sh` / `prepare_vscode.sh` |
+| `get_repo.sh` | VS Code **1.116.0** @ `560a9dba` cloned to `vscodium/vscode/` |
+| `git config core.longpaths true` | Needed after two long-path snapshot files failed on first checkout |
+| `prepare_vscode.sh` (patches) | All VSCodium patches + `90-local-code-enable-ai-default.patch` applied |
+| Helper script | [`scripts/win-build-env.sh`](scripts/win-build-env.sh) — Git Bash `PATH` for pnpm, jq, cargo, Python |
+
+### Blocker: MSVC / VC++ toolset (admin or IT)
+
+`pnpm install --frozen-lockfile` fails in `build/npm/postinstall.ts` when **node-gyp** rebuilds native modules (e.g. `@vscode/deviceid`, `@vscode/spdlog` under `remote/`).
+
+```
+VS 2022 Community found at ...\2022\Community
+- found "Visual Studio C++ core features"
+- missing any VC++ toolset
+```
+
+- **Visual Studio Installer → Modify → Desktop development with C++** is the fix; often requires elevation or an IT ticket.
+- `winget install Microsoft.VisualStudio.2022.BuildTools` with `--add Microsoft.VisualStudio.Workload.VCTools` exited **1602** (cancelled / policy / UAC).
+- **WSL2** not installed; would also typically need admin for first-time setup.
+
+### Re-running `prepare_vscode.sh`
+
+If `vscode/` already has patches applied, a second `prepare_vscode.sh` fails on the first patch (`patch does not apply`). Reset before re-preparing:
+
+```bash
+source scripts/win-build-env.sh
+cd vscodium/vscode
+git reset --hard HEAD
+git clean -fdx   # drops node_modules; omit or narrow if you only need a patch retry
+cd ..
+bash prepare_vscode.sh
+```
+
+After VC++ is available, a full prepare may not be needed—**`pnpm install --frozen-lockfile`** in `vscodium/vscode/` may suffice if patches are already applied.
+
+### Recommendation: split dev vs build machines
+
+| Machine | Role |
+|---------|------|
+| **Locked-down Windows (work)** | Patches, docs, `PROJECT.md`, git; **do not expect compile** without VC++ workload |
+| **macOS (home / prior progress)** | `pnpm install`, `pnpm run compile`, run IDE — see [2026-05-19 Xcode fix](#2026-05-19--xcode-fix-pnpm-install-succeeded) |
+
+Stock **VSCodium + Ollama** on Windows is still useful for UX spikes; it does not replace building this fork.
+
+### Follow-ups
+
+- [ ] IT: add **Desktop development with C++** to VS 2022 Community, or install **Build Tools 2022 + VC++ workload**
+- [ ] On Mac: `cd vscodium/vscode && pnpm run compile` (install already succeeded there)
+- [ ] Optional: shorten clone path on Windows (e.g. `C:\lc\`) if long-path issues return
+
+---
+
 ## 2026-05-19 — Xcode fix: pnpm install succeeded
 
 ### Resolution

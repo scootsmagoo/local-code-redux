@@ -1,0 +1,231 @@
+diff --git a/src/vs/workbench/contrib/chat/browser/chat.contribution.ts b/src/vs/workbench/contrib/chat/browser/chat.contribution.ts
+index 7e9c73f6..d4258b9e 100644
+--- a/src/vs/workbench/contrib/chat/browser/chat.contribution.ts
++++ b/src/vs/workbench/contrib/chat/browser/chat.contribution.ts
+@@ -634,7 +634,7 @@ configurationRegistry.registerConfiguration({
+ 			],
+ 			enumDescriptions: [
+ 				nls.localize('chat.mcp.access.none', "No access to MCP servers."),
+-				nls.localize('chat.mcp.access.registry', "Allows access to MCP servers installed from the registry that VS Code is connected to."),
++				nls.localize('chat.mcp.access.registry', "Allows access to MCP servers installed from the registry that VSCodium is connected to."),
+ 				nls.localize('chat.mcp.access.any', "Allow access to any installed MCP server.")
+ 			],
+ 			default: McpAccessValue.All,
+@@ -661,7 +661,7 @@ configurationRegistry.registerConfiguration({
+ 							key: 'chat.mcp.access.none', value: nls.localize('chat.mcp.access.none', "No access to MCP servers."),
+ 						},
+ 						{
+-							key: 'chat.mcp.access.registry', value: nls.localize('chat.mcp.access.registry', "Allows access to MCP servers installed from the registry that VS Code is connected to."),
++							key: 'chat.mcp.access.registry', value: nls.localize('chat.mcp.access.registry', "Allows access to MCP servers installed from the registry that VSCodium is connected to."),
+ 						},
+ 						{
+ 							key: 'chat.mcp.access.any', value: nls.localize('chat.mcp.access.any', "Allow access to any installed MCP server.")
+@@ -1417,7 +1417,7 @@ configurationRegistry.registerConfiguration({
+ 		},
+ 		[ChatConfiguration.AIDisabled]: {
+ 			type: 'boolean',
+-			description: nls.localize('chat.disableAIFeatures', "Disable and hide built-in AI features provided by GitHub Copilot, including chat and inline suggestions."),
++			description: nls.localize('chat.disableAIFeatures', "Disable and hide built-in AI features, including chat and inline suggestions."),
+ 			default: false,
+ 			scope: ConfigurationScope.WINDOW
+ 		},
+@@ -1501,6 +1501,18 @@ configurationRegistry.registerConfiguration({
+ 			description: nls.localize('chat.customizations.harnessSelector.enabled', "Controls whether the harness selector is shown in the Chat Customizations editor sidebar. When disabled, the editor always shows all customizations without filtering."),
+ 			default: true,
+ 		},
++		'localCode.ollama.endpoint': {
++			type: 'string',
++			default: 'http://127.0.0.1:11434',
++			description: nls.localize('localCode.ollama.endpoint', "HTTP endpoint for the local Ollama API."),
++			scope: ConfigurationScope.APPLICATION
++		},
++		'localCode.ollama.defaultModel': {
++			type: 'string',
++			default: '',
++			description: nls.localize('localCode.ollama.defaultModel', "Default Ollama model id (for example qwen2.5-coder:7b). Leave empty to use the first available model."),
++			scope: ConfigurationScope.APPLICATION
++		},
+ 	}
+ });
+ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+diff --git a/src/vs/workbench/contrib/chat/browser/chatSetup/chatSetupContributions.ts b/src/vs/workbench/contrib/chat/browser/chatSetup/chatSetupContributions.ts
+index 3fa75da3..93f43d01 100644
+--- a/src/vs/workbench/contrib/chat/browser/chatSetup/chatSetupContributions.ts
++++ b/src/vs/workbench/contrib/chat/browser/chatSetup/chatSetupContributions.ts
+@@ -222,7 +222,7 @@ export class ChatSetupContribution extends Disposable implements IWorkbenchContr
+ 
+ 		class ChatSetupTriggerAction extends Action2 {
+ 
+-			static CHAT_SETUP_ACTION_LABEL = localize2('triggerChatSetup', "Use AI Features with Copilot for free...");
++			static CHAT_SETUP_ACTION_LABEL = localize2('triggerChatSetup', "Connect to Ollama...");
+ 
+ 			constructor() {
+ 				super({
+@@ -230,12 +230,13 @@ export class ChatSetupContribution extends Disposable implements IWorkbenchContr
+ 					title: ChatSetupTriggerAction.CHAT_SETUP_ACTION_LABEL,
+ 					category: CHAT_CATEGORY,
+ 					f1: true,
+-					precondition: ContextKeyExpr.or(
+-						ChatContextKeys.Setup.hidden,
+-						ChatContextKeys.Setup.disabledInWorkspace,
+-						ChatContextKeys.Setup.untrusted,
+-						ChatContextKeys.Setup.completed.negate(),
+-						ChatContextKeys.Entitlement.canSignUp
++					precondition: ContextKeyExpr.and(
++						ContextKeyExpr.has('config.chat.disableAIFeatures').negate(),
++						ChatContextKeys.Setup.hidden.negate(),
++						ChatContextKeys.Setup.disabledInWorkspace.negate(),
++						ChatContextKeys.Setup.untrusted.negate(),
++						ChatContextKeys.Setup.completed,
++						ChatContextKeys.Entitlement.canSignUp.negate()
+ 					)
+ 				});
+ 			}
+@@ -351,6 +352,7 @@ export class ChatSetupContribution extends Disposable implements IWorkbenchContr
+ 						id: MenuId.AccountsContext,
+ 						group: '2_copilot',
+ 						when: ContextKeyExpr.and(
++							ContextKeyExpr.has('config.chat.disableAIFeatures').negate(),
+ 							ChatContextKeys.Setup.hidden.negate(),
+ 							ChatContextKeys.Setup.disabledInWorkspace.negate(),
+ 							ChatContextKeys.Setup.completed.negate(),
+@@ -383,6 +385,7 @@ export class ChatSetupContribution extends Disposable implements IWorkbenchContr
+ 						id: MenuId.TitleBarAdjacentCenter,
+ 						order: 0, // same position as the update button
+ 						when: ContextKeyExpr.and(
++							ContextKeyExpr.has('config.chat.disableAIFeatures').negate(),
+ 							IsWebContext.negate(),
+ 							ContextKeyExpr.has(`config.${ChatConfiguration.SignInTitleBarEnabled}`),
+ 							ChatContextKeys.Entitlement.signedOut,
+@@ -413,6 +416,7 @@ export class ChatSetupContribution extends Disposable implements IWorkbenchContr
+ 					category: localize2('chat.category', 'Chat'),
+ 					f1: true,
+ 					precondition: ContextKeyExpr.and(
++						ContextKeyExpr.has('config.chat.disableAIFeatures').negate(),
+ 						ChatContextKeys.Setup.hidden.negate(),
+ 						ChatContextKeys.Setup.disabledInWorkspace.negate(),
+ 						ContextKeyExpr.or(
+@@ -470,6 +474,7 @@ export class ChatSetupContribution extends Disposable implements IWorkbenchContr
+ 					category: localize2('chat.category', 'Chat'),
+ 					f1: true,
+ 					precondition: ContextKeyExpr.and(
++						ContextKeyExpr.has('config.chat.disableAIFeatures').negate(),
+ 						ChatContextKeys.Setup.hidden.negate(),
+ 						ChatContextKeys.Setup.disabledInWorkspace.negate(),
+ 						ContextKeyExpr.or(
+@@ -562,6 +567,7 @@ export class ChatSetupContribution extends Disposable implements IWorkbenchContr
+ 		registerGenerateCodeCommand('chat.internal.codeReview.run', 'github.copilot.chat.codeReview.run');
+ 
+ 		const internalGenerateCodeContext = ContextKeyExpr.and(
++			ContextKeyExpr.has('config.chat.disableAIFeatures').negate(),
+ 			ChatContextKeys.Setup.hidden.negate(),
+ 			ChatContextKeys.Setup.disabledInWorkspace.negate(),
+ 			ChatContextKeys.Setup.completed.negate(),
+@@ -799,7 +805,11 @@ export class ChatTeardownContribution extends Disposable implements IWorkbenchCo
+ 					title: ChatSetupHideAction.TITLE,
+ 					f1: true,
+ 					category: CHAT_CATEGORY,
+-					precondition: ContextKeyExpr.and(ChatContextKeys.Setup.hidden.negate(), ChatContextKeys.Setup.disabledInWorkspace.negate()),
++					precondition: ContextKeyExpr.and(
++						ContextKeyExpr.has('config.chat.disableAIFeatures').negate(),
++						ChatContextKeys.Setup.hidden.negate(),
++						ChatContextKeys.Setup.disabledInWorkspace.negate()
++					),
+ 					menu: {
+ 						id: MenuId.ChatTitleBarMenu,
+ 						group: 'z_hide',
+diff --git a/src/vs/workbench/contrib/chat/browser/chatSetup/chatSetupProviders.ts b/src/vs/workbench/contrib/chat/browser/chatSetup/chatSetupProviders.ts
+index ffc5b0ec..aa25465f 100644
+--- a/src/vs/workbench/contrib/chat/browser/chatSetup/chatSetupProviders.ts
++++ b/src/vs/workbench/contrib/chat/browser/chatSetup/chatSetupProviders.ts
+@@ -107,7 +107,7 @@ export class SetupAgent extends Disposable implements IChatAgentImplementation {
+ 					break;
+ 			}
+ 
+-			return SetupAgent.doRegisterAgent(instantiationService, chatAgentService, id, `${defaultChat.provider.default.name} Copilot` /* Do NOT change, this hides the username altogether in Chat */, true, description, location, mode, context, controller);
++			return SetupAgent.doRegisterAgent(instantiationService, chatAgentService, id, defaultChat.provider.default.name || 'Local Code' /* hides username in Chat */, true, description, location, mode, context, controller);
+ 		});
+ 	}
+ 
+@@ -118,7 +118,7 @@ export class SetupAgent extends Disposable implements IChatAgentImplementation {
+ 			const disposables = new DisposableStore();
+ 
+ 			// Register VSCode agent
+-			const { disposable: vscodeDisposable } = SetupAgent.doRegisterAgent(instantiationService, chatAgentService, 'setup.vscode', 'vscode', false, localize2('vscodeAgentDescription', "Ask questions about VS Code").value, ChatAgentLocation.Chat, ChatModeKind.Agent, context, controller);
++			const { disposable: vscodeDisposable } = SetupAgent.doRegisterAgent(instantiationService, chatAgentService, 'setup.vscode', 'vscode', false, localize2('vscodeAgentDescription', "Ask questions about Local Code").value, ChatAgentLocation.Chat, ChatModeKind.Agent, context, controller);
+ 			disposables.add(vscodeDisposable);
+ 
+ 			// Register workspace agent
+@@ -135,8 +135,8 @@ export class SetupAgent extends Disposable implements IChatAgentImplementation {
+ 				source: ToolDataSource.Internal,
+ 				icon: Codicon.newFolder,
+ 				displayName: localize('setupToolDisplayName', "New Workspace"),
+-				modelDescription: 'Scaffold a new workspace in VS Code',
+-				userDescription: localize('setupToolsDescription', "Scaffold a new workspace in VS Code"),
++				modelDescription: 'Scaffold a new workspace in Local Code',
++				userDescription: localize('setupToolsDescription', "Scaffold a new workspace in Local Code"),
+ 				canBeReferencedInPrompt: true,
+ 				toolReferenceName: 'new',
+ 				when: ContextKeyExpr.true(),
+@@ -175,7 +175,7 @@ export class SetupAgent extends Disposable implements IChatAgentImplementation {
+ 		return { agent, disposable: disposables };
+ 	}
+ 
+-	private static readonly SETUP_NEEDED_MESSAGE = new MarkdownString(localize('settingUpCopilotNeeded', "You need to set up GitHub Copilot and be signed in to use Chat."));
++	private static readonly SETUP_NEEDED_MESSAGE = new MarkdownString(localize('settingUpOllamaNeeded', "Connect to [Ollama](https://github.com/ollama/ollama) on this machine to use Chat. Install Ollama, pull a model, then run **Connect to Ollama** from the Command Palette."));
+ 	private static readonly TRUST_NEEDED_MESSAGE = new MarkdownString(localize('trustNeeded', "You need to trust this workspace to use Chat."));
+ 
+ 	private static readonly CHAT_RETRY_COMMAND_ID = 'workbench.action.chat.retrySetup';
+@@ -298,7 +298,7 @@ export class SetupAgent extends Disposable implements IChatAgentImplementation {
+ 
+ 			progress({
+ 				kind: 'warning',
+-				content: new MarkdownString(localize('copilotUnavailableWarning', "Failed to get a response. Please try again."))
++				content: new MarkdownString(localize('localModelUnavailableWarning', "Failed to get a response from a local model. Check that Ollama is running and a model is available."))
+ 			});
+ 		}
+ 	}
+diff --git a/src/vs/workbench/contrib/chat/browser/chatSetup/chatSetupRunner.ts b/src/vs/workbench/contrib/chat/browser/chatSetup/chatSetupRunner.ts
+index a89af980..b94a0517 100644
+--- a/src/vs/workbench/contrib/chat/browser/chatSetup/chatSetupRunner.ts
++++ b/src/vs/workbench/contrib/chat/browser/chatSetup/chatSetupRunner.ts
+@@ -259,7 +259,7 @@ export class ChatSetup {
+ 		if (options?.forceAnonymous || this.telemetryService.telemetryLevel === TelemetryLevel.NONE) {
+ 			footer = localize({ key: 'settingsAnonymous', comment: ['{Locked="["}', '{Locked="]({1})"}', '{Locked="]({2})"}'] }, "By continuing, you agree to {0}'s [Terms]({1}) and [Privacy Statement]({2}).", defaultChat.provider.default.name, defaultChat.termsStatementUrl, defaultChat.privacyStatementUrl);
+ 		} else {
+-			footer = localize({ key: 'settings', comment: ['{Locked="["}', '{Locked="]({1})"}', '{Locked="]({2})"}', '{Locked="]({4})"}', '{Locked="]({5})"}'] }, "By continuing, you agree to {0}'s [Terms]({1}) and [Privacy Statement]({2}). {3} Copilot may show [public code]({4}) suggestions and use your data to improve the product. You can change these [settings]({5}) anytime.", defaultChat.provider.default.name, defaultChat.termsStatementUrl, defaultChat.privacyStatementUrl, defaultChat.provider.default.name, defaultChat.publicCodeMatchesUrl, defaultChat.manageSettingsUrl);
++			footer = localize({ key: 'settingsLocal', comment: ['{Locked="["}', '{Locked="]({1})"}'] }, "Local Code sends prompts to models you run locally (for example via [Ollama]({1})). Cloud/API models are optional and off by default.", defaultChat.provider.default.name, 'https://github.com/ollama/ollama');
+ 		}
+ 		element.appendChild($('p', undefined, disposables.add(this.markdownRendererService.render(new MarkdownString(footer, { isTrusted: true }))).element));
+ 
+diff --git a/src/vs/workbench/contrib/chat/browser/widget/chatWidget.ts b/src/vs/workbench/contrib/chat/browser/widget/chatWidget.ts
+index 31d68e88..015adabb 100644
+--- a/src/vs/workbench/contrib/chat/browser/widget/chatWidget.ts
++++ b/src/vs/workbench/contrib/chat/browser/widget/chatWidget.ts
+@@ -201,7 +201,7 @@ const supportsAllAttachments: Required<IChatAgentAttachmentCapabilities> = {
+ 	supportsCheckpoints: true,
+ };
+ 
+-const DISCLAIMER = localize('chatDisclaimer', "AI responses may be inaccurate");
++const DISCLAIMER = localize('chatDisclaimer', "Local model responses may be inaccurate. Verify important changes.");
+ 
+ export class ChatWidget extends Disposable implements IChatWidget {
+ 
+@@ -1110,7 +1110,7 @@ export class ChatWidget extends Disposable implements IChatWidget {
+ 			// Show generate instructions message if no files exist
+ 			return new MarkdownString(localize(
+ 				'chatWidget.instructions',
+-				"[Generate Agent Instructions]({0}) to onboard AI onto your codebase.",
++				"[Generate agent instructions]({0}) to help local models understand your project.",
+ 				`command:${GENERATE_AGENT_INSTRUCTIONS_COMMAND_ID}`
+ 			), { isTrusted: { enabledCommands: [GENERATE_AGENT_INSTRUCTIONS_COMMAND_ID] } });
+ 		}
+@@ -1165,7 +1165,7 @@ export class ChatWidget extends Disposable implements IChatWidget {
+ 		} else if (this.input.currentModeKind === ChatModeKind.Edit) {
+ 			title = localize('editsTitle', "Edit in context");
+ 		} else {
+-			title = localize('agentTitle', "Build with Agent");
++			title = localize('agentTitle', "Build with local models");
+ 		}
+ 
+ 		return {

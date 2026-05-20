@@ -128,6 +128,40 @@ setpath_json "product" "tunnelApplicationConfig" '{}'
 jsonTmp=$( jq -s '.[0] * .[1]' product.json ../product.json )
 echo "${jsonTmp}" > product.json && unset jsonTmp
 
+# Local Code product identity (this repo ships product-local-code.json)
+if [[ -f "../product-local-code.json" ]]; then
+  APP_NAME="Local Code"
+  APP_NAME_LC="localcode"
+  BINARY_NAME="localcode"
+  ORG_NAME="local-code"
+  GH_REPO_PATH="scootsmagoo/local-code-redux"
+  ASSETS_REPOSITORY="scootsmagoo/local-code-redux"
+
+  setpath "product" "nameShort" "Local Code"
+  setpath "product" "nameLong" "Local Code"
+  setpath "product" "applicationName" "localcode"
+  setpath "product" "dataFolderName" ".local-code"
+  setpath "product" "linuxIconName" "localcode"
+  setpath "product" "urlProtocol" "localcode"
+  setpath "product" "serverApplicationName" "localcode-server"
+  setpath "product" "serverDataFolderName" ".local-code-server"
+  setpath "product" "darwinBundleIdentifier" "com.localcode"
+  setpath "product" "win32AppUserModelId" "LocalCode.LocalCode"
+  setpath "product" "win32DirName" "Local Code"
+  setpath "product" "win32MutexName" "localcode"
+  setpath "product" "win32NameVersion" "Local Code"
+  setpath "product" "win32RegValueName" "LocalCode"
+  setpath "product" "win32ShellNameShort" "Local Code"
+  setpath "product" "tunnelApplicationName" "localcode-tunnel"
+  setpath "product" "win32TunnelServiceMutex" "localcodetunnelservice"
+  setpath "product" "win32TunnelMutex" "localcode-tunnel"
+  setpath "product" "reportIssueUrl" "https://github.com/scootsmagoo/local-code-redux/issues/new"
+  setpath "product" "licenseUrl" "https://github.com/scootsmagoo/local-code-redux/blob/main/LICENSE"
+
+  jsonTmp=$( jq -s '.[0] * .[1]' product.json ../product-local-code.json )
+  echo "${jsonTmp}" > product.json && unset jsonTmp
+fi
+
 cat product.json
 # }}}
 

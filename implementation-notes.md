@@ -4,6 +4,41 @@ Running log of decisions, tradeoffs, and changes not spelled out in [`PROJECT.md
 
 ---
 
+## 2026-05-20 — Phase 1: Local Code product identity
+
+### Shipped in repo
+
+| Item | Location |
+|------|----------|
+| Product overlay | [`vscodium/product-local-code.json`](vscodium/product-local-code.json) — neutered `defaultChatAgent` (Ollama provider, no GitHub extension ids) |
+| Prepare hook | [`vscodium/prepare_vscode.sh`](vscodium/prepare_vscode.sh) — when overlay exists: `APP_NAME=Local Code`, `applicationName=localcode`, `dataFolderName=.local-code`, merge overlay |
+| Branding + chat copy patch | [`vscodium/patches/user/91-local-code-phase1-branding.patch`](vscodium/patches/user/91-local-code-phase1-branding.patch) |
+| Ollama settings (stubs) | `localCode.ollama.endpoint` / `localCode.ollama.defaultModel` in `chat.contribution.ts` (Phase 2 provider reads these) |
+
+### Dev tree (already prepared)
+
+`vscodium/vscode/product.json` and chat sources were updated in-place for `./scripts/run-dev.sh`. After a clean `prepare_vscode.sh`, patches re-apply the same edits.
+
+### Rebuild / relaunch
+
+```bash
+cd vscodium/vscode
+eval "$(fnm env)" && fnm use 22.22.1
+pnpm run compile   # required for .ts string / config changes
+cd ../..
+./scripts/run-dev.sh
+```
+
+Electron app folder name follows `product.nameLong` (expect **Local Code Dev.app** under `.build/electron/` after `preLaunch`).
+
+### Phase 1 follow-ups
+
+- [ ] Custom icons (still VSCodium assets until overlay)
+- [ ] `defaultChatAgent` participant → Local Code agent (Phase 2 `contrib/localLLM`)
+- [ ] Wire **Connect to Ollama** command to health-check + model list (Phase 2)
+
+---
+
 ## 2026-05-20 — Windows / locked-down work PC (build not viable here)
 
 ### Context

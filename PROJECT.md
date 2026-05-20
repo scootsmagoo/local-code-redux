@@ -210,8 +210,9 @@ Upstream VS Code scripts still reference `npm run` in `package.json` script name
 | VS Code source cloned | Done — `vscodium/vscode/` @ 1.116.0 |
 | AI enabled by default patch | Done — `patches/user/90-local-code-enable-ai-default.patch` |
 | Node **22.22.1** + **pnpm** | Done (fnm + corepack) |
-| `pnpm install` (vscode deps) | **Done** (with `DEVELOPER_DIR` → Xcode.app) |
-| Compile / run IDE | **Next** — `pnpm run compile` in `vscodium/vscode/` |
-| `contrib/localLLM` provider | Not started |
+| `pnpm install` (vscode deps) | Done (with `DEVELOPER_DIR` → Xcode.app) |
+| Compile / run IDE | Done — `./scripts/run-dev.sh` |
+| **Phase 1** product identity | **In progress** — `91-local-code-phase1-branding.patch` + `product-local-code.json` |
+| `contrib/localLLM` provider (Phase 2) | Not started |
 
 See [`implementation-notes.md`](implementation-notes.md) for the live log.

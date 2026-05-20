@@ -1,0 +1,56 @@
+{
+  "reportIssueUrl": "https://github.com/scootsmagoo/local-code-redux/issues/new",
+  "licenseUrl": "https://github.com/scootsmagoo/local-code-redux/blob/main/LICENSE",
+  "defaultChatAgent": {
+    "extensionId": "",
+    "chatExtensionId": "",
+    "chatExtensionOutputId": "",
+    "chatExtensionOutputExtensionStateCommand": "",
+    "documentationUrl": "https://github.com/ollama/ollama",
+    "termsStatementUrl": "",
+    "privacyStatementUrl": "",
+    "skusDocumentationUrl": "",
+    "publicCodeMatchesUrl": "",
+    "manageSettingsUrl": "",
+    "managePlanUrl": "",
+    "manageOverageUrl": "",
+    "upgradePlanUrl": "",
+    "signUpUrl": "",
+    "provider": {
+      "default": {
+        "id": "ollama",
+        "name": "Ollama"
+      },
+      "enterprise": {
+        "id": "",
+        "name": ""
+      },
+      "google": {
+        "id": "",
+        "name": ""
+      },
+      "apple": {
+        "id": "",
+        "name": ""
+      }
+    },
+    "providerExtensionId": "",
+    "providerUriSetting": "",
+    "providerScopes": [],
+    "entitlementUrl": "",
+    "entitlementSignupLimitedUrl": "",
+    "chatQuotaExceededContext": "",
+    "completionsQuotaExceededContext": "",
+    "walkthroughCommand": "",
+    "completionsMenuCommand": "",
+    "completionsRefreshTokenCommand": "",
+    "chatRefreshTokenCommand": "",
+    "generateCommitMessageCommand": "",
+    "resolveMergeConflictsCommand": "",
+    "completionsAdvancedSetting": "",
+    "completionsEnablementSetting": "",
+    "nextEditSuggestionsSetting": "",
+    "tokenEntitlementUrl": "",
+    "mcpRegistryDataUrl": ""
+  }
+}

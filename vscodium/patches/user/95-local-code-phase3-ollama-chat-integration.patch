@@ -1,0 +1,826 @@
+diff --git a/src/vs/workbench/contrib/localLLM/browser/ollamaConnect.ts b/src/vs/workbench/contrib/localLLM/browser/ollamaConnect.ts
+new file mode 100644
+--- a/src/vs/workbench/contrib/localLLM/browser/ollamaConnect.ts	2026-05-21 08:08:20
++++ b/src/vs/workbench/contrib/localLLM/browser/ollamaConnect.ts	2026-05-21 05:35:59
+@@ -0,0 +1,115 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Local Code contributors. All rights reserved.
++ *  Licensed under the MIT License.
++ *--------------------------------------------------------------------------------------------*/
++
++import { CancellationToken } from '../../../../base/common/cancellation.js';
++import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
++import { URI } from '../../../../base/common/uri.js';
++import { localize } from '../../../../nls.js';
++import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
++import { ILogService } from '../../../../platform/log/common/log.js';
++import { INativeHostService } from '../../../../platform/native/common/native.js';
++import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
++import { IRequestService } from '../../../../platform/request/common/request.js';
++import product from '../../../../platform/product/common/product.js';
++import { ChatEntitlement, ChatEntitlementContext } from '../../../services/chat/common/chatEntitlementService.js';
++import { ILanguageModelsService } from '../../chat/common/languageModels.js';
++import { OllamaClient, OLLAMA_VENDOR } from './ollamaClient.js';
++import { LocalCodeOllamaSettings } from './ollamaLanguageModelProvider.js';
++
++export const LOCAL_CODE_CONNECT_OLLAMA_COMMAND_ID = 'localCode.connectOllama';
++export const LOCAL_CODE_OPEN_OLLAMA_APP_COMMAND_ID = 'localCode.openOllamaApp';
++
++const OLLAMA_MAC_APP = '/Applications/Ollama.app';
++const OLLAMA_WIN_APP = 'C:\\Program Files\\Ollama\\Ollama.exe';
++
++export async function openOllamaApp(nativeHostService: INativeHostService): Promise<void> {
++	if (isMacintosh) {
++		await nativeHostService.openExternal(URI.file(OLLAMA_MAC_APP).toString(true));
++	} else if (isWindows) {
++		await nativeHostService.openExternal(URI.file(OLLAMA_WIN_APP).toString(true));
++	}
++}
++
++const defaultChatExtensionId = product.defaultChatAgent?.chatExtensionId ?? '';
++
++export function isLocalCodeOllamaMode(): boolean {
++	return !defaultChatExtensionId;
++}
++
++export interface IOllamaConnectResult {
++	readonly ok: boolean;
++	readonly modelNames: readonly string[];
++	readonly errorMessage?: string;
++}
++
++export async function connectToOllama(options: {
++	requestService: IRequestService;
++	logService: ILogService;
++	configurationService: IConfigurationService;
++	languageModelsService: ILanguageModelsService;
++	context: ChatEntitlementContext | undefined;
++	notificationService?: INotificationService;
++	nativeHostService?: INativeHostService;
++	silent?: boolean;
++}): Promise<IOllamaConnectResult> {
++	const endpoint = options.configurationService.getValue<string>(LocalCodeOllamaSettings.endpoint) ?? 'http://127.0.0.1:11434';
++	const timeoutMs = options.configurationService.getValue<number>(LocalCodeOllamaSettings.requestTimeoutMs) ?? 120_000;
++	const client = new OllamaClient(options.requestService, options.logService);
++
++	try {
++		const models = await client.listModels(endpoint, timeoutMs, CancellationToken.None);
++		if (models.length === 0) {
++			const errorMessage = localize('localCode.ollama.noModelsShort', "Ollama is running but no models are installed. In a terminal run: ollama pull <model>");
++			if (!options.silent) {
++				options.notificationService?.notify({ severity: Severity.Warning, message: errorMessage });
++			}
++			return { ok: false, modelNames: [], errorMessage };
++		}
++
++		await options.languageModelsService.selectLanguageModels({ vendor: OLLAMA_VENDOR });
++
++		if (options.context) {
++			await options.context.update({ installed: true, disabled: false, untrusted: false, disabledInWorkspace: false });
++			await options.context.update({ entitlement: ChatEntitlement.Free, organisations: undefined, sku: undefined, copilotTrackingId: undefined });
++			await options.context.update({ completed: true });
++		}
++
++		const modelNames = models.map(m => m.name);
++		if (!options.silent) {
++			options.notificationService?.info(localize(
++				'localCode.ollama.connected',
++				"Connected to Ollama at {0}. {1} model(s) available in the model picker.",
++				endpoint,
++				modelNames.length,
++			));
++		}
++		options.logService.info(`[Local Code] Ollama connected: ${modelNames.join(', ')}`);
++		return { ok: true, modelNames };
++	} catch (err) {
++		const errorMessage = localize(
++			'localCode.ollama.unreachable',
++			"Could not reach Ollama at {0}. Ensure the Ollama app is running (or run `ollama serve`). No sign-in is required.",
++			endpoint,
++		);
++		const detail = err instanceof Error ? err.message : String(err);
++		options.logService.warn(`[Local Code] ${errorMessage}`, detail);
++		if (!options.silent && options.notificationService) {
++			const fullMessage = `${errorMessage} ${detail}`;
++			if ((isMacintosh || isWindows) && options.nativeHostService) {
++				options.notificationService.prompt(
++					Severity.Error,
++					fullMessage,
++					[{
++						label: localize('localCode.openOllamaApp', "Open Ollama"),
++						run: () => openOllamaApp(options.nativeHostService!),
++					}],
++				);
++			} else {
++				options.notificationService.notify({ severity: Severity.Error, message: fullMessage });
++			}
++		}
++		return { ok: false, modelNames: [], errorMessage: `${errorMessage} ${detail}` };
++	}
++}
+
+diff --git a/src/vs/workbench/contrib/localLLM/browser/localCodeChatAgent.ts b/src/vs/workbench/contrib/localLLM/browser/localCodeChatAgent.ts
+new file mode 100644
+--- a/src/vs/workbench/contrib/localLLM/browser/localCodeChatAgent.ts	2026-05-21 08:08:20
++++ b/src/vs/workbench/contrib/localLLM/browser/localCodeChatAgent.ts	2026-05-21 05:48:22
+@@ -0,0 +1,214 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Local Code contributors. All rights reserved.
++ *  Licensed under the MIT License.
++ *--------------------------------------------------------------------------------------------*/
++
++import { Codicon } from '../../../../base/common/codicons.js';
++import { CancellationToken } from '../../../../base/common/cancellation.js';
++import { MarkdownString } from '../../../../base/common/htmlContent.js';
++import { Disposable, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
++import { ThemeIcon } from '../../../../base/common/themables.js';
++import { localize } from '../../../../nls.js';
++import { ILogService } from '../../../../platform/log/common/log.js';
++import { nullExtensionDescription } from '../../../services/extensions/common/extensions.js';
++import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
++import { IChatAgentImplementation, IChatAgentHistoryEntry, IChatAgentRequest, IChatAgentResult, IChatAgentService } from '../../chat/common/participants/chatAgents.js';
++import { ChatMode } from '../../chat/common/chatModes.js';
++import { IChatProgress, IChatTaskDto } from '../../chat/common/chatService/chatService.js';
++import { IChatProgressHistoryResponseContent } from '../../chat/common/model/chatModel.js';
++import { ChatAgentLocation, ChatModeKind } from '../../chat/common/constants.js';
++import { ChatMessageRole, IChatMessage, ILanguageModelsService } from '../../chat/common/languageModels.js';
++import { OLLAMA_VENDOR } from './ollamaClient.js';
++import { LOCAL_CODE_OLLAMA_SYSTEM_PROMPT } from './localCodeSystemPrompt.js';
++
++export const LOCAL_CODE_CHAT_AGENT_IDS = {
++	chat: 'localcode.chat',
++	edits: 'localcode.edits',
++	agent: 'localcode.agent',
++	terminal: 'localcode.terminal',
++	editor: 'localcode.editor',
++	notebook: 'localcode.notebook',
++} as const;
++
++const HELP_TEXT = new MarkdownString(localize(
++	'localCode.chat.help',
++	"Chat uses **Ollama** on this machine (`http://127.0.0.1:11434`). No sign-in. Use the **model picker** next to the input (shows the model name, e.g. llama3.1:8b) — not the **Local** session button.",
++));
++HELP_TEXT.isTrusted = true;
++
++export class LocalCodeChatAgent extends Disposable implements IChatAgentImplementation {
++
++	constructor(
++		@ILanguageModelsService private readonly _languageModelsService: ILanguageModelsService,
++		@ILogService private readonly _logService: ILogService,
++	) {
++		super();
++	}
++
++	async invoke(
++		request: IChatAgentRequest,
++		progress: (parts: IChatProgress[]) => void,
++		history: IChatAgentHistoryEntry[],
++		token: CancellationToken,
++	): Promise<IChatAgentResult> {
++		const modelId = await this._resolveModelId(request.userSelectedModelId, token);
++		if (!modelId) {
++			progress([{
++				kind: 'markdownContent',
++				content: new MarkdownString(localize(
++					'localCode.chat.noModel',
++					"No Ollama model is available. Start the **Ollama** app (menu bar), run `ollama pull <model>` if needed, then pick a model in the chat model dropdown.",
++				)),
++			}]);
++			return {};
++		}
++
++		const messages = this._buildMessages(request, history);
++
++		try {
++			const response = await this._languageModelsService.sendChatRequest(modelId, undefined, messages, {}, token);
++			for await (const part of response.stream) {
++				if (token.isCancellationRequested) {
++					break;
++				}
++				const chunk = extractTextChunk(part);
++				if (chunk) {
++					progress([{ kind: 'markdownContent', content: new MarkdownString(chunk) }]);
++				}
++			}
++			await response.result;
++		} catch (err) {
++			const detail = err instanceof Error ? err.message : String(err);
++			this._logService.warn(`[Local Code] Chat request failed: ${detail}`);
++			progress([{
++				kind: 'markdownContent',
++				content: new MarkdownString(localize(
++					'localCode.chat.error',
++					"Could not get a response from Ollama. Is the Ollama app running? {0}",
++					detail,
++				)),
++			}]);
++		}
++
++		return {};
++	}
++
++	private async _resolveModelId(userSelectedModelId: string | undefined, token: CancellationToken): Promise<string | undefined> {
++		if (userSelectedModelId && this._languageModelsService.lookupLanguageModel(userSelectedModelId)) {
++			return userSelectedModelId;
++		}
++
++		for (const id of this._languageModelsService.getLanguageModelIds()) {
++			const model = this._languageModelsService.lookupLanguageModel(id);
++			if (model?.vendor === OLLAMA_VENDOR && model.isUserSelectable) {
++				return id;
++			}
++		}
++
++		const ids = await this._languageModelsService.selectLanguageModels({ vendor: OLLAMA_VENDOR });
++		if (token.isCancellationRequested) {
++			return undefined;
++		}
++		return ids[0];
++	}
++
++	private _buildMessages(request: IChatAgentRequest, history: IChatAgentHistoryEntry[]): IChatMessage[] {
++		const messages: IChatMessage[] = [{
++			role: ChatMessageRole.System,
++			content: [{ type: 'text', value: LOCAL_CODE_OLLAMA_SYSTEM_PROMPT }],
++		}];
++
++		for (const entry of history) {
++			if (entry.request.message) {
++				messages.push({
++					role: ChatMessageRole.User,
++					content: [{ type: 'text', value: entry.request.message }],
++				});
++			}
++			const assistantText = historyResponseToText(entry.response);
++			if (assistantText) {
++				messages.push({
++					role: ChatMessageRole.Assistant,
++					content: [{ type: 'text', value: assistantText }],
++				});
++			}
++		}
++
++		if (request.message) {
++			messages.push({
++				role: ChatMessageRole.User,
++				content: [{ type: 'text', value: request.message }],
++			});
++		}
++
++		return messages;
++	}
++}
++
++function historyResponseToText(response: ReadonlyArray<IChatProgressHistoryResponseContent | IChatTaskDto>): string {
++	let text = '';
++	for (const part of response) {
++		if (part.kind === 'markdownContent') {
++			text += part.content.value;
++		}
++	}
++	return text.trim();
++}
++
++function extractTextChunk(part: unknown): string | undefined {
++	if (Array.isArray(part)) {
++		let text = '';
++		for (const p of part) {
++			if (p && typeof p === 'object' && 'type' in p && (p as { type: string }).type === 'text' && 'value' in p) {
++				text += String((p as { value: string }).value);
++			}
++		}
++		return text || undefined;
++	}
++	if (part && typeof part === 'object' && 'type' in part && (part as { type: string }).type === 'text' && 'value' in part) {
++		return String((part as { value: string }).value);
++	}
++	return undefined;
++}
++
++export function registerLocalCodeChatAgents(instantiationService: IInstantiationService): IDisposable {
++	return instantiationService.invokeFunction(accessor => {
++		const chatAgentService = accessor.get(IChatAgentService);
++		const disposables = new DisposableStore();
++
++		const impl = instantiationService.createInstance(LocalCodeChatAgent);
++
++		const register = (id: string, name: string, isDefault: boolean, description: string, location: ChatAgentLocation, mode: ChatModeKind, themeIcon?: ThemeIcon) => {
++			disposables.add(chatAgentService.registerAgent(id, {
++				id,
++				name,
++				isDefault,
++				isCore: false,
++				modes: [mode],
++				slashCommands: [],
++				disambiguation: [],
++				locations: [location],
++				metadata: { helpTextPrefix: HELP_TEXT },
++				description,
++				extensionId: nullExtensionDescription.identifier,
++				extensionVersion: undefined,
++				extensionDisplayName: nullExtensionDescription.name,
++				extensionPublisherId: nullExtensionDescription.publisher,
++			}));
++			disposables.add(chatAgentService.registerAgentImplementation(id, impl));
++			if (themeIcon) {
++				chatAgentService.updateAgent(id, { themeIcon });
++			}
++		};
++
++		const displayName = localize('localCode.chat.agentName', "Local Code");
++		register(LOCAL_CODE_CHAT_AGENT_IDS.chat, displayName, true, ChatMode.Ask.description.get(), ChatAgentLocation.Chat, ChatModeKind.Ask);
++		register(LOCAL_CODE_CHAT_AGENT_IDS.edits, displayName, true, ChatMode.Edit.description.get(), ChatAgentLocation.Chat, ChatModeKind.Edit);
++		register(LOCAL_CODE_CHAT_AGENT_IDS.agent, displayName, true, ChatMode.Agent.description.get(), ChatAgentLocation.Chat, ChatModeKind.Agent, Codicon.tools);
++		register(LOCAL_CODE_CHAT_AGENT_IDS.terminal, displayName, true, ChatMode.Ask.description.get(), ChatAgentLocation.Terminal, ChatModeKind.Ask);
++		register(LOCAL_CODE_CHAT_AGENT_IDS.editor, displayName, true, ChatMode.Ask.description.get(), ChatAgentLocation.EditorInline, ChatModeKind.Ask);
++		register(LOCAL_CODE_CHAT_AGENT_IDS.notebook, displayName, true, ChatMode.Ask.description.get(), ChatAgentLocation.Notebook, ChatModeKind.Ask);
++
++		return disposables;
++	});
++}
+
+diff --git a/src/vs/workbench/contrib/localLLM/browser/localCodeSystemPrompt.ts b/src/vs/workbench/contrib/localLLM/browser/localCodeSystemPrompt.ts
+new file mode 100644
+--- a/src/vs/workbench/contrib/localLLM/browser/localCodeSystemPrompt.ts	2026-05-21 08:08:20
++++ b/src/vs/workbench/contrib/localLLM/browser/localCodeSystemPrompt.ts	2026-05-21 05:47:55
+@@ -0,0 +1,37 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Local Code contributors. All rights reserved.
++ *  Licensed under the MIT License.
++ *--------------------------------------------------------------------------------------------*/
++
++import { localize } from '../../../../nls.js';
++
++/** Prepended to every Ollama chat request so local models behave like a coding assistant. */
++export const LOCAL_CODE_OLLAMA_SYSTEM_PROMPT = localize(
++	'localCode.ollama.systemPrompt',
++	"You are a helpful coding assistant in Local Code. Answer questions about software development clearly and professionally. "
++	+ "Write code when asked. Stay on topic. Do not produce random word lists, slurs, or unrelated content. "
++	+ "If you cannot help, say so briefly.",
++);
++
++/** Prefer these name patterns when choosing the default Ollama model (first match wins). */
++export const PREFERRED_OLLAMA_DEFAULT_MODEL_PATTERNS: readonly RegExp[] = [
++	/^llama3\.1:/i,
++	/^llama3\.2:/i,
++	/^llama3:/i,
++	/^qwen2\.5-coder:(?!.*base)/i,
++	/^qwen2\.5:/i,
++	/^deepseek/i,
++];
++
++export function pickPreferredOllamaModelName(models: readonly { readonly name: string }[], configuredDefault: string): string {
++	if (configuredDefault && models.some(m => m.name === configuredDefault)) {
++		return configuredDefault;
++	}
++	for (const pattern of PREFERRED_OLLAMA_DEFAULT_MODEL_PATTERNS) {
++		const match = models.find(m => pattern.test(m.name));
++		if (match) {
++			return match.name;
++		}
++	}
++	return models[0]?.name ?? '';
++}
+
+diff --git a/src/vs/workbench/contrib/localLLM/browser/localLLM.contribution.ts b/src/vs/workbench/contrib/localLLM/browser/localLLM.contribution.ts
+--- a/src/vs/workbench/contrib/localLLM/browser/localLLM.contribution.ts	2026-05-21 08:08:20
++++ b/src/vs/workbench/contrib/localLLM/browser/localLLM.contribution.ts	2026-05-21 05:26:04
+@@ -4,14 +4,77 @@
+  *--------------------------------------------------------------------------------------------*/
+ 
+ import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
+-import { localize } from '../../../../nls.js';
++import { localize, localize2 } from '../../../../nls.js';
++import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
+ import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
++import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+ import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
++import { ILogService } from '../../../../platform/log/common/log.js';
++import { INotificationService } from '../../../../platform/notification/common/notification.js';
++import { INativeHostService } from '../../../../platform/native/common/native.js';
++import { IRequestService } from '../../../../platform/request/common/request.js';
+ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
++import { ChatEntitlementService, IChatEntitlementService } from '../../../services/chat/common/chatEntitlementService.js';
+ import { ILanguageModelsService } from '../../chat/common/languageModels.js';
++import { connectToOllama, isLocalCodeOllamaMode, LOCAL_CODE_CONNECT_OLLAMA_COMMAND_ID, LOCAL_CODE_OPEN_OLLAMA_APP_COMMAND_ID, openOllamaApp } from './ollamaConnect.js';
++import { registerLocalCodeChatAgents } from './localCodeChatAgent.js';
+ import { LocalCodeOllamaSettings, OllamaLanguageModelProvider } from './ollamaLanguageModelProvider.js';
+ import { OLLAMA_VENDOR } from './ollamaClient.js';
+ 
++class OpenOllamaAppAction extends Action2 {
++
++	constructor() {
++		super({
++			id: LOCAL_CODE_OPEN_OLLAMA_APP_COMMAND_ID,
++			title: localize2('localCode.openOllamaApp', "Open Ollama App"),
++			category: localize2('localCode.category', 'Local Code'),
++			f1: false,
++		});
++	}
++
++	override async run(accessor: ServicesAccessor): Promise<void> {
++		await openOllamaApp(accessor.get(INativeHostService));
++	}
++}
++
++class ConnectToOllamaAction extends Action2 {
++
++	constructor() {
++		super({
++			id: LOCAL_CODE_CONNECT_OLLAMA_COMMAND_ID,
++			title: localize2('localCode.connectOllama', "Connect to Ollama"),
++			category: localize2('localCode.category', 'Local Code'),
++			f1: true,
++		});
++	}
++
++	override async run(accessor: ServicesAccessor): Promise<boolean> {
++		const result = await runConnectToOllama(accessor, false);
++		return result.ok;
++	}
++}
++
++export async function runConnectToOllama(accessor: ServicesAccessor, silent: boolean) {
++	const requestService = accessor.get(IRequestService);
++	const logService = accessor.get(ILogService);
++	const configurationService = accessor.get(IConfigurationService);
++	const languageModelsService = accessor.get(ILanguageModelsService);
++	const notificationService = accessor.get(INotificationService);
++	const nativeHostService = accessor.get(INativeHostService);
++	const chatEntitlementService = accessor.get(IChatEntitlementService) as ChatEntitlementService;
++
++	return connectToOllama({
++		requestService,
++		logService,
++		configurationService,
++		languageModelsService,
++		context: chatEntitlementService.context?.value,
++		notificationService,
++		nativeHostService,
++		silent,
++	});
++}
++
+ export class LocalLLMContribution extends Disposable implements IWorkbenchContribution {
+ 
+ 	static readonly ID = 'workbench.contrib.localLLM';
+@@ -20,6 +83,11 @@
+ 		@ILanguageModelsService private readonly _languageModelsService: ILanguageModelsService,
+ 		@IInstantiationService instantiationService: IInstantiationService,
+ 		@IConfigurationService configurationService: IConfigurationService,
++		@IRequestService private readonly _requestService: IRequestService,
++		@ILogService private readonly _logService: ILogService,
++		@INotificationService private readonly _notificationService: INotificationService,
++		@INativeHostService private readonly _nativeHostService: INativeHostService,
++		@IChatEntitlementService private readonly _chatEntitlementService: IChatEntitlementService,
+ 	) {
+ 		super();
+ 
+@@ -37,6 +105,10 @@
+ 		const provider = this._register(instantiationService.createInstance(OllamaLanguageModelProvider));
+ 		this._register(this._languageModelsService.registerLanguageModelProvider(OLLAMA_VENDOR, provider));
+ 
++		if (isLocalCodeOllamaMode()) {
++			this._register(registerLocalCodeChatAgents(instantiationService));
++		}
++
+ 		this._register(configurationService.onDidChangeConfiguration(e => {
+ 			if (e.affectsConfiguration(LocalCodeOllamaSettings.endpoint)
+ 				|| e.affectsConfiguration(LocalCodeOllamaSettings.defaultModel)
+@@ -45,7 +117,26 @@
+ 				provider.refresh();
+ 			}
+ 		}));
++
++		if (isLocalCodeOllamaMode()) {
++			void connectToOllama({
++				requestService: this._requestService,
++				logService: this._logService,
++				configurationService,
++				languageModelsService: this._languageModelsService,
++				context: (this._chatEntitlementService as ChatEntitlementService).context?.value,
++				notificationService: this._notificationService,
++				nativeHostService: this._nativeHostService,
++				silent: true,
++			}).then(result => {
++				if (result.ok) {
++					provider.refresh();
++				}
++			});
++		}
+ 	}
+ }
+ 
+-registerWorkbenchContribution2(LocalLLMContribution.ID, LocalLLMContribution, WorkbenchPhase.AfterRestored);
++registerAction2(OpenOllamaAppAction);
++registerAction2(ConnectToOllamaAction);
++registerWorkbenchContribution2(LocalLLMContribution.ID, LocalLLMContribution, WorkbenchPhase.BlockRestore);
+
+diff --git a/src/vs/workbench/contrib/localLLM/browser/ollamaLanguageModelProvider.ts b/src/vs/workbench/contrib/localLLM/browser/ollamaLanguageModelProvider.ts
+--- a/src/vs/workbench/contrib/localLLM/browser/ollamaLanguageModelProvider.ts	2026-05-21 08:08:20
++++ b/src/vs/workbench/contrib/localLLM/browser/ollamaLanguageModelProvider.ts	2026-05-21 05:48:09
+@@ -24,6 +24,7 @@
+ 	ILanguageModelChatResponse,
+ } from '../../chat/common/languageModels.js';
+ import { modelIdentifier, modelNameFromIdentifier, OllamaChatMessage, OllamaClient, OLLAMA_VENDOR } from './ollamaClient.js';
++import { pickPreferredOllamaModelName } from './localCodeSystemPrompt.js';
+ 
+ const LOCAL_CODE_OLLAMA_EXTENSION = new ExtensionIdentifier('local-code.ollama');
+ 
+@@ -70,9 +71,7 @@
+ 			throw new Error(localize('localCode.ollama.noModels', "Ollama is running but no models are installed. Run `ollama pull` to add a model."));
+ 		}
+ 
+-		const defaultName = defaultModel && models.some(m => m.name === defaultModel)
+-			? defaultModel
+-			: models[0].name;
++		const defaultName = pickPreferredOllamaModelName(models, defaultModel);
+ 
+ 		return models.map(m => {
+ 			const isDefault = m.name === defaultName;
+@@ -85,6 +84,8 @@
+ 					vendor: OLLAMA_VENDOR,
+ 					family: m.name,
+ 					version: '1',
++					detail: localize('localCode.ollama.modelDetail', "Ollama on this machine"),
++					tooltip: localize('localCode.ollama.modelTooltip', "Local model via Ollama at {0}", endpoint),
+ 					maxInputTokens: 128_000,
+ 					maxOutputTokens: this._configurationService.getValue<number>(LocalCodeOllamaSettings.maxOutputTokens) ?? 4096,
+ 					isDefaultForLocation: isDefault ? {
+@@ -94,7 +95,7 @@
+ 						[ChatAgentLocation.Notebook]: true,
+ 					} : {},
+ 					isUserSelectable: true,
+-					modelPickerCategory: { label: localize('localCode.ollama.category', "Local (Ollama)"), order: 0 },
++					modelPickerCategory: { label: localize('localCode.ollama.category', "Ollama"), order: 0 },
+ 					capabilities: {
+ 						toolCalling: false,
+ 						agentMode: false,
+
+diff --git a/src/vs/workbench/contrib/chat/browser/chatSetup/chatSetupController.ts b/src/vs/workbench/contrib/chat/browser/chatSetup/chatSetupController.ts
+--- a/src/vs/workbench/contrib/chat/browser/chatSetup/chatSetupController.ts	2026-05-21 08:08:20
++++ b/src/vs/workbench/contrib/chat/browser/chatSetup/chatSetupController.ts	2026-05-21 05:03:50
+@@ -114,8 +114,12 @@
+ 		try {
+ 			let entitlement: ChatEntitlement | undefined;
+ 
++			const localOnlyChat = !defaultChat.chatExtensionId;
++
+ 			let signIn: boolean;
+-			if (options.forceSignIn) {
++			if (localOnlyChat) {
++				signIn = false; // Local Code: no cloud auth; Ollama is reached via ILanguageModelsService
++			} else if (options.forceSignIn) {
+ 				signIn = true; // forced to sign in
+ 			} else if (this.context.state.entitlement === ChatEntitlement.Unknown) {
+ 				if (options.forceAnonymous) {
+@@ -191,8 +195,11 @@
+ 			provider = options.useSocialProvider ?? (options.useEnterpriseProvider ? defaultChat.provider.enterprise.id : defaultChat.provider.default.id);
+ 		}
+ 
++		const localOnlyChat = !defaultChat.chatExtensionId;
++
+ 		try {
+ 			if (
++				!localOnlyChat &&
+ 				!options.forceAnonymous &&						// User is not asking for anonymous access
+ 				entitlement !== ChatEntitlement.Free &&			// User is not signed up to Copilot Free
+ 				!isProUser(entitlement) &&						// User is not signed up for a Copilot subscription
+@@ -260,6 +267,10 @@
+ 	}
+ 
+ 	private async doInstall(): Promise<void> {
++		if (!defaultChat.chatExtensionId) {
++			return; // Local Code: built-in chat, no Copilot extension to install
++		}
++
+ 		await this.extensionsWorkbenchService.install(defaultChat.chatExtensionId, {
+ 			enable: true,
+ 			isApplicationScoped: true, 	// install into all profiles
+
+diff --git a/src/vs/workbench/contrib/chat/browser/widget/input/chatInputPart.ts b/src/vs/workbench/contrib/chat/browser/widget/input/chatInputPart.ts
+--- a/src/vs/workbench/contrib/chat/browser/widget/input/chatInputPart.ts	2026-05-21 08:08:20
++++ b/src/vs/workbench/contrib/chat/browser/widget/input/chatInputPart.ts	2026-05-21 05:50:48
+@@ -90,6 +90,7 @@
+ import { IChatEditingSession, IModifiedFileEntry, ModifiedFileEntryState } from '../../../common/editing/chatEditingService.js';
+ import { ILanguageModelChatMetadata, ILanguageModelChatMetadataAndIdentifier, ILanguageModelsService } from '../../../common/languageModels.js';
+ import { IChatModelInputState, IChatRequestModeInfo, IInputModel } from '../../../common/model/chatModel.js';
++import { isLocalCodeOllamaMode } from '../../../../localLLM/browser/ollamaConnect.js';
+ import { filterModelsForSession, findDefaultModel, hasModelsTargetingSession, isModelValidForSession, mergeModelsWithCache, resolveModelFromSyncState, shouldResetModelToDefault, shouldResetOnModelListChange, shouldRestoreLateArrivingModel, shouldRestorePersistedModel } from './chatModelSelectionLogic.js';
+ import { getChatSessionType } from '../../../common/model/chatUri.js';
+ import { IChatResponseViewModel, isResponseVM } from '../../../common/model/chatViewModel.js';
+@@ -2240,18 +2241,31 @@
+ 						},
+ 						getModels: () => this.getModels(),
+ 						useGroupedModelPicker: () => {
++							// Local Code: flat list of every Ollama model (Copilot grouped UI hides them under collapsed "Other Models").
++							if (isLocalCodeOllamaMode()) {
++								return false;
++							}
+ 							const sessionType = this.getCurrentSessionType();
+ 							return !sessionType || sessionType === localChatSessionType;
+ 						},
+ 						showManageModelsAction: () => {
++							if (isLocalCodeOllamaMode()) {
++								return false;
++							}
+ 							const sessionType = this.getCurrentSessionType();
+ 							return !sessionType || sessionType === localChatSessionType;
+ 						},
+ 						showUnavailableFeatured: () => {
++							if (isLocalCodeOllamaMode()) {
++								return false;
++							}
+ 							const sessionType = this.getCurrentSessionType();
+ 							return !sessionType || sessionType === localChatSessionType;
+ 						},
+ 						showFeatured: () => {
++							if (isLocalCodeOllamaMode()) {
++								return false;
++							}
+ 							const sessionType = this.getCurrentSessionType();
+ 							return !sessionType || sessionType === localChatSessionType;
+ 						},
+
+diff --git a/src/vs/code/electron-browser/workbench/workbench.html b/src/vs/code/electron-browser/workbench/workbench.html
+--- a/src/vs/code/electron-browser/workbench/workbench.html	2026-05-21 08:08:20
++++ b/src/vs/code/electron-browser/workbench/workbench.html	2026-05-21 05:23:50
+@@ -37,6 +37,8 @@
+ 					'self'
+ 					https:
+ 					ws:
++					http://127.0.0.1:*
++					http://localhost:*
+ 				;
+ 				font-src
+ 					'self'
+
+diff --git a/src/vs/code/electron-browser/workbench/workbench-dev.html b/src/vs/code/electron-browser/workbench/workbench-dev.html
+--- a/src/vs/code/electron-browser/workbench/workbench-dev.html	2026-05-21 08:08:20
++++ b/src/vs/code/electron-browser/workbench/workbench-dev.html	2026-05-21 05:23:49
+@@ -38,6 +38,8 @@
+ 					'self'
+ 					https:
+ 					ws:
++					http://127.0.0.1:*
++					http://localhost:*
+ 				;
+ 				font-src
+ 					'self'
+
+diff --git a/src/vs/workbench/contrib/chat/browser/chatSetup/chatSetupContributions.ts b/src/vs/workbench/contrib/chat/browser/chatSetup/chatSetupContributions.ts
+--- a/src/vs/workbench/contrib/chat/browser/chatSetup/chatSetupContributions.ts	2026-05-21 08:08:20
++++ b/src/vs/workbench/contrib/chat/browser/chatSetup/chatSetupContributions.ts	2026-05-21 05:18:57
+@@ -56,6 +56,7 @@
+ import { GrowthSessionController, registerGrowthSession } from './chatSetupGrowthSession.js';
+ import { AICodeActionsHelper, AINewSymbolNamesProvider, ChatCodeActionsProvider, SetupAgent } from './chatSetupProviders.js';
+ import { ChatSetup } from './chatSetupRunner.js';
++import { isLocalCodeOllamaMode, LOCAL_CODE_CONNECT_OLLAMA_COMMAND_ID } from '../../../localLLM/browser/ollamaConnect.js';
+ 
+ const defaultChat = {
+ 	chatExtensionId: product.defaultChatAgent?.chatExtensionId ?? '',
+@@ -92,6 +93,11 @@
+ 			return; // disabled
+ 		}
+ 
++		// Local Code: no Copilot extension or cloud sign-in — mark chat ready for Ollama via built-in LM provider.
++		if (!defaultChat.chatExtensionId) {
++			void this.bootstrapLocalChat(context);
++		}
++
+ 		const controller = new Lazy(() => this._register(this.instantiationService.createInstance(ChatSetupController, context, requests)));
+ 
+ 		this.registerSetupAgents(context, controller);
+@@ -99,9 +105,17 @@
+ 		this.registerActions(context, requests, controller);
+ 		this.registerSignInTitleBarEntry(actionViewItemService);
+ 		this.registerUrlLinkHandler();
+-		this.checkExtensionInstallation(context);
++		if (defaultChat.chatExtensionId) {
++			this.checkExtensionInstallation(context);
++		}
+ 	}
+ 
++	private async bootstrapLocalChat(context: ChatEntitlementContext): Promise<void> {
++		await context.update({ installed: true, disabled: false, untrusted: false, disabledInWorkspace: false });
++		await context.update({ entitlement: ChatEntitlement.Free, organisations: undefined, sku: undefined, copilotTrackingId: undefined });
++		await context.update({ completed: true });
++	}
++
+ 	private registerSetupAgents(context: ChatEntitlementContext, controller: Lazy<ChatSetupController>): void {
+ 		const defaultAgentDisposables = markAsSingleton(new MutableDisposable()); // prevents flicker on window reload
+ 		const vscodeAgentDisposables = markAsSingleton(new MutableDisposable());
+@@ -115,8 +129,8 @@
+ 			{
+ 				if (!context.state.hidden && !context.state.disabledInWorkspace) {
+ 
+-					// Default Agents (always, even if installed to allow for speedy requests right on startup)
+-					if (!defaultAgentDisposables.value) {
++					// Default Agents (Copilot extension path only — Local Code registers localcode.* agents via LocalLLMContribution)
++					if (defaultChat.chatExtensionId && !defaultAgentDisposables.value) {
+ 						const disposables = defaultAgentDisposables.value = new DisposableStore();
+ 
+ 						// Panel Agents
+@@ -127,11 +141,6 @@
+ 							panelAgentDisposables.add(agent.onUnresolvableError(() => {
+ 								const panelAgentHasGuidance = chatViewsWelcomeRegistry.get().some(descriptor => this.contextKeyService.contextMatchesRules(descriptor.when));
+ 								if (panelAgentHasGuidance) {
+-									// An unresolvable error from our agent registrations means that
+-									// Chat is unhealthy for some reason. We clear our panel
+-									// registration to give Chat a chance to show a custom message
+-									// to the user from the views and stop pretending as if there was
+-									// a functional agent.
+ 									this.logService.error('[chat setup] Unresolvable error from Chat agent registration, clearing registration.');
+ 									panelAgentDisposables.dispose();
+ 								}
+@@ -235,7 +244,7 @@
+ 						ChatContextKeys.Setup.hidden.negate(),
+ 						ChatContextKeys.Setup.disabledInWorkspace.negate(),
+ 						ChatContextKeys.Setup.untrusted.negate(),
+-						ChatContextKeys.Setup.completed,
++						ChatContextKeys.Setup.completed.negate(),
+ 						ChatContextKeys.Entitlement.canSignUp.negate()
+ 					)
+ 				});
+@@ -263,6 +272,10 @@
+ 					chatWidget?.setInput(options.inputValue);
+ 				}
+ 
++				if (isLocalCodeOllamaMode()) {
++					return Boolean(await commandService.executeCommand(LOCAL_CODE_CONNECT_OLLAMA_COMMAND_ID));
++				}
++
+ 				const setup = ChatSetup.getInstance(instantiationService, context, controller);
+ 				const { success } = await setup.run(options);
+ 				if (success === false && !lifecycleService.willShutdown) {
+
+diff --git a/src/vs/workbench/contrib/chat/browser/chatSetup/chatSetupProviders.ts b/src/vs/workbench/contrib/chat/browser/chatSetup/chatSetupProviders.ts
+--- a/src/vs/workbench/contrib/chat/browser/chatSetup/chatSetupProviders.ts	2026-05-21 08:08:20
++++ b/src/vs/workbench/contrib/chat/browser/chatSetup/chatSetupProviders.ts	2026-05-21 05:26:20
+@@ -53,6 +53,11 @@
+ import { chatViewsWelcomeRegistry } from '../viewsWelcome/chatViewsWelcome.js';
+ import { CommandsRegistry, ICommandService } from '../../../../../platform/commands/common/commands.js';
+ import { IDefaultAccountService } from '../../../../../platform/defaultAccount/common/defaultAccount.js';
++import { connectToOllama, isLocalCodeOllamaMode } from '../../../localLLM/browser/ollamaConnect.js';
++import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
++import { IRequestService } from '../../../../../platform/request/common/request.js';
++import { INativeHostService } from '../../../../../platform/native/common/native.js';
++import { INotificationService } from '../../../../../platform/notification/common/notification.js';
+ import { IHostService } from '../../../../services/host/browser/host.js';
+ import { IOutputService } from '../../../../services/output/common/output.js';
+ import { IExtensionsWorkbenchService } from '../../../extensions/common/extensions.js';
+@@ -176,7 +181,10 @@
+ 	}
+ 
+ 	private static readonly SETUP_NEEDED_MESSAGE = (() => {
+-		const message = new MarkdownString(localize('settingUpOllamaNeeded', "Ollama runs on this machine — no sign-in. [Connect to Ollama](command:localCode.connectOllama) to load your installed models into the picker, or run **Connect to Ollama** from the Command Palette."));
++		const message = new MarkdownString(localize(
++			'settingUpOllamaNeeded',
++			"Ollama runs on this machine — no sign-in. [Connect to Ollama](command:localCode.connectOllama) to load your installed models into the picker, or run **Connect to Ollama** from the Command Palette.",
++		));
+ 		message.isTrusted = true;
+ 		return message;
+ 	})();
+@@ -687,6 +695,42 @@
+ 
+ 		const widget = chatWidgetService.getWidgetBySessionResource(request.sessionResource);
+ 		const requestModel = widget?.viewModel?.model.getRequests().at(-1);
++
++		if (isLocalCodeOllamaMode()) {
++			return this.instantiationService.invokeFunction(async accessor => {
++				progress({
++					kind: 'progressMessage',
++					content: new MarkdownString(localize('connectingToOllama', "Connecting to Ollama on this machine…")),
++					shimmer: true,
++				});
++
++				const connectResult = await connectToOllama({
++					requestService: accessor.get(IRequestService),
++					logService: accessor.get(ILogService),
++					configurationService: accessor.get(IConfigurationService),
++					languageModelsService,
++					context: this.context,
++					notificationService: accessor.get(INotificationService),
++					nativeHostService: accessor.get(INativeHostService),
++					silent: false,
++				});
++
++				if (!connectResult.ok) {
++					progress({
++						kind: 'warning',
++						content: new MarkdownString(connectResult.errorMessage ?? localize('localCode.ollama.connectFailed', "Could not connect to Ollama.")),
++					});
++					return {};
++				}
++
++				if (requestModel) {
++					let newRequest = this.replaceAgentInRequestModel(requestModel, chatAgentService);
++					newRequest = this.replaceToolInRequestModel(newRequest);
++					await this.forwardRequestToChat(newRequest, progress, chatService, languageModelsService, chatAgentService, chatWidgetService, languageModelToolsService);
++				}
++				return {};
++			});
++		}
+ 
+ 		const setupListener = Event.runAndSubscribe(this.controller.value.onDidChange, (() => {
+ 			switch (this.controller.value.step) {

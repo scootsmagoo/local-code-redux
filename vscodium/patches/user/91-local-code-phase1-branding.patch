@@ -167,12 +167,16 @@ index ffc5b0ec..aa25465f 100644
  				canBeReferencedInPrompt: true,
  				toolReferenceName: 'new',
  				when: ContextKeyExpr.true(),
-@@ -175,7 +175,7 @@ export class SetupAgent extends Disposable implements IChatAgentImplementation {
+@@ -175,7 +175,11 @@ export class SetupAgent extends Disposable implements IChatAgentImplementation {
  		return { agent, disposable: disposables };
  	}
  
 -	private static readonly SETUP_NEEDED_MESSAGE = new MarkdownString(localize('settingUpCopilotNeeded', "You need to set up GitHub Copilot and be signed in to use Chat."));
-+	private static readonly SETUP_NEEDED_MESSAGE = new MarkdownString(localize('settingUpOllamaNeeded', "Connect to [Ollama](https://github.com/ollama/ollama) on this machine to use Chat. Install Ollama, pull a model, then run **Connect to Ollama** from the Command Palette."));
++	private static readonly SETUP_NEEDED_MESSAGE = (() => {
++		const message = new MarkdownString(localize('settingUpOllamaNeeded', "Ollama runs on this machine — no sign-in. [Connect to Ollama](command:localCode.connectOllama) to load your installed models into the picker, or run **Connect to Ollama** from the Command Palette."));
++		message.isTrusted = true;
++		return message;
++	})();
  	private static readonly TRUST_NEEDED_MESSAGE = new MarkdownString(localize('trustNeeded', "You need to trust this workspace to use Chat."));
  
  	private static readonly CHAT_RETRY_COMMAND_ID = 'workbench.action.chat.retrySetup';
@@ -194,7 +198,7 @@ index a89af980..b94a0517 100644
  			footer = localize({ key: 'settingsAnonymous', comment: ['{Locked="["}', '{Locked="]({1})"}', '{Locked="]({2})"}'] }, "By continuing, you agree to {0}'s [Terms]({1}) and [Privacy Statement]({2}).", defaultChat.provider.default.name, defaultChat.termsStatementUrl, defaultChat.privacyStatementUrl);
  		} else {
 -			footer = localize({ key: 'settings', comment: ['{Locked="["}', '{Locked="]({1})"}', '{Locked="]({2})"}', '{Locked="]({4})"}', '{Locked="]({5})"}'] }, "By continuing, you agree to {0}'s [Terms]({1}) and [Privacy Statement]({2}). {3} Copilot may show [public code]({4}) suggestions and use your data to improve the product. You can change these [settings]({5}) anytime.", defaultChat.provider.default.name, defaultChat.termsStatementUrl, defaultChat.privacyStatementUrl, defaultChat.provider.default.name, defaultChat.publicCodeMatchesUrl, defaultChat.manageSettingsUrl);
-+			footer = localize({ key: 'settingsLocal', comment: ['{Locked="["}', '{Locked="]({1})"}'] }, "Local Code sends prompts to models you run locally (for example via [Ollama]({1})). Cloud/API models are optional and off by default.", defaultChat.provider.default.name, 'https://github.com/ollama/ollama');
++			footer = localize('settingsLocal', "Local Code sends prompts to models on this machine via Ollama ({0}). No cloud sign-in. Cloud/API models are optional and off by default.", 'http://127.0.0.1:11434');
  		}
  		element.appendChild($('p', undefined, disposables.add(this.markdownRendererService.render(new MarkdownString(footer, { isTrusted: true }))).element));
  

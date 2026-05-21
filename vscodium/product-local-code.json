@@ -6,7 +6,7 @@
     "chatExtensionId": "",
     "chatExtensionOutputId": "",
     "chatExtensionOutputExtensionStateCommand": "",
-    "documentationUrl": "https://github.com/ollama/ollama",
+    "documentationUrl": "",
     "termsStatementUrl": "",
     "privacyStatementUrl": "",
     "skusDocumentationUrl": "",
@@ -18,8 +18,8 @@
     "signUpUrl": "",
     "provider": {
       "default": {
-        "id": "ollama",
-        "name": "Ollama"
+        "id": "local",
+        "name": "Local Code"
       },
       "enterprise": {
         "id": "",
